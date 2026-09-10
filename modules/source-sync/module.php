@@ -2,7 +2,7 @@
 /**
  * Module: JaPur Source Sync
  * Description: Safe source website monitor for the Buat Artikel workflow.
- * Module Version: 1.2.1
+ * Module Version: 1.2.2
  * Author: Japur Ganteng
  */
 if (!defined('ABSPATH')) exit;
@@ -85,17 +85,23 @@ class Japur_Source_Sync {
     }
 
     private static function fetch_xml($url) {
-        $r=wp_safe_remote_get($url,['timeout'=>20,'redirection'=>4,'user-agent'=>'JaPurSourceSync/1.1']);
+        $r=wp_safe_remote_get($url,['timeout'=>20,'redirection'=>4,'user-agent'=>'JaPurSourceSync/1.2']);
         if(is_wp_error($r)) return $r;
         $code=(int)wp_remote_retrieve_response_code($r);
         if($code<200 || $code>=300) return new WP_Error('http','Sitemap tidak dapat diakses (HTTP '.$code.').');
         $body=wp_remote_retrieve_body($r);
         if(!$body) return new WP_Error('empty','Sitemap kosong.');
         libxml_use_internal_errors(true);
-        $xml=simplexml_load_string($body);
+        $xml=simplexml_load_string($body,'SimpleXMLElement',LIBXML_NONET|LIBXML_NOCDATA);
         libxml_clear_errors();
         if(!$xml) return new WP_Error('xml','Format sitemap tidak valid.');
         return $xml;
+    }
+
+    private static function sitemap_nodes($xml,$name) {
+        if(!($xml instanceof SimpleXMLElement)) return [];
+        $nodes=$xml->xpath('/*[local-name()="'.$name.'"]/*[local-name()="'.($name==='sitemapindex'?'sitemap':'url').'"]');
+        return is_array($nodes)?$nodes:[];
     }
 
     private static function sitemap_is_post($url) {
@@ -114,39 +120,34 @@ class Japur_Source_Sync {
         $xml=self::fetch_xml($index_url);
         if(is_wp_error($xml)) return [];
         $posts=[];
-        if(isset($xml->sitemap)) {
-            foreach($xml->sitemap as $sm) {
-                $loc=esc_url_raw(trim((string)$sm->loc));
-                if(!$loc) continue;
-                $index_host=strtolower((string)wp_parse_url($index_url,PHP_URL_HOST));
-                $child_host=strtolower((string)wp_parse_url($loc,PHP_URL_HOST));
-                if(!$child_host || $child_host!==$index_host) continue;
-                if(self::sitemap_is_post($loc)) {
-                    $lastmod=trim((string)($sm->lastmod ?? ''));
-                    $posts[]=['url'=>$loc,'lastmod'=>$lastmod];
-                } else {
-                    $child_path=strtolower((string)wp_parse_url($loc,PHP_URL_PATH));
-                    if(preg_match('~(sitemap[_-]?index|wp-sitemap)~i',$child_path)) {
-                        $posts=array_merge($posts,self::collect_post_sitemaps($loc,$depth+1,$visited));
-                    }
+        foreach(self::sitemap_nodes($xml,'sitemapindex') as $sm) {
+            $loc=esc_url_raw(trim((string)$sm->loc));
+            if(!$loc) continue;
+            $index_host=strtolower((string)wp_parse_url($index_url,PHP_URL_HOST));
+            $child_host=strtolower((string)wp_parse_url($loc,PHP_URL_HOST));
+            if(!$child_host || $child_host!==$index_host) continue;
+            if(self::sitemap_is_post($loc)) {
+                $lastmod=trim((string)($sm->lastmod ?? ''));
+                $posts[]=['url'=>$loc,'lastmod'=>$lastmod];
+            } else {
+                $child_path=strtolower((string)wp_parse_url($loc,PHP_URL_PATH));
+                if(preg_match('~(sitemap[_-]?index|wp-sitemap)~i',$child_path)) {
+                    $posts=array_merge($posts,self::collect_post_sitemaps($loc,$depth+1,$visited));
                 }
             }
-            return $posts;
         }
-        return [];
+        return $posts;
     }
 
     private static function read_post_sitemap($url) {
         $xml=self::fetch_xml($url);
         if(is_wp_error($xml)) return [];
         $items=[];
-        if(isset($xml->url)) {
-            foreach($xml->url as $u) {
-                $loc=esc_url_raw(trim((string)$u->loc));
-                if(!$loc || !preg_match('~^https?://~i',$loc)) continue;
-                $lastmod=trim((string)($u->lastmod ?? ''));
-                $items[$loc]=['url'=>$loc,'title'=>'','date'=>$lastmod];
-            }
+        foreach(self::sitemap_nodes($xml,'urlset') as $u) {
+            $loc=esc_url_raw(trim((string)$u->loc));
+            if(!$loc || !preg_match('~^https?://~i',$loc)) continue;
+            $lastmod=trim((string)($u->lastmod ?? ''));
+            $items[$loc]=['url'=>$loc,'title'=>'','date'=>$lastmod];
         }
         return array_values($items);
     }
@@ -163,23 +164,22 @@ class Japur_Source_Sync {
         foreach($candidates as $sm) {
             $xml=self::fetch_xml($sm);
             if(is_wp_error($xml)) continue;
-            if(isset($xml->sitemap)) {
-                foreach($xml->sitemap as $child) {
-                    $loc=esc_url_raw(trim((string)$child->loc));
-                    if(!$loc) continue;
-                    $path=strtolower((string)wp_parse_url($loc,PHP_URL_PATH));
-                    if(self::sitemap_is_post($loc)) {
-                        $post_sitemaps[]=['url'=>$loc,'lastmod'=>trim((string)($child->lastmod ?? ''))];
-                    } elseif(preg_match('~(sitemap[_-]?index|wp-sitemap)~i',$path)) {
-                        $post_sitemaps=array_merge($post_sitemaps,self::collect_post_sitemaps($loc,1,$visited));
-                    }
+            foreach(self::sitemap_nodes($xml,'sitemapindex') as $child) {
+                $loc=esc_url_raw(trim((string)$child->loc));
+                if(!$loc) continue;
+                $path=strtolower((string)wp_parse_url($loc,PHP_URL_PATH));
+                if(self::sitemap_is_post($loc)) {
+                    $post_sitemaps[]=['url'=>$loc,'lastmod'=>trim((string)($child->lastmod ?? ''))];
+                } elseif(preg_match('~(sitemap[_-]?index|wp-sitemap)~i',$path)) {
+                    $post_sitemaps=array_merge($post_sitemaps,self::collect_post_sitemaps($loc,1,$visited));
                 }
-            } elseif(self::sitemap_is_post($sm)) {
+            }
+            if(!self::sitemap_nodes($xml,'sitemapindex') && self::sitemap_is_post($sm)) {
                 $post_sitemaps[]=['url'=>$sm,'lastmod'=>''];
             }
             if($post_sitemaps) break;
         }
-        $unique=[]; foreach($post_sitemaps as $sm) $unique[$sm['url']]=$sm; $post_sitemaps=array_values($unique);
+        $unique=[]; foreach($post_sitemaps as $item) $unique[$item['url']]=$item; $post_sitemaps=array_values($unique);
         if(!$post_sitemaps) return new WP_Error('post_sitemap','Post sitemap tidak ditemukan. Pastikan website memiliki sitemap artikel/post yang dapat diakses publik.');
         $urls=[];
         $source_host=strtolower(preg_replace('/^www\./i','',$host));
@@ -190,7 +190,6 @@ class Japur_Source_Sync {
             $item_host=strtolower(preg_replace('/^www\./i','',(string)parse_url($item_url,PHP_URL_HOST)));
             $item_path=untrailingslashit((string)wp_parse_url($item_url,PHP_URL_PATH));
             if($item_host!==$source_host) continue;
-            // Jangan tampilkan homepage/domain utama sebagai artikel.
             if(strtolower($item_url)===strtolower($source_root) || $item_path==='') continue;
             $urls[$item_url]=['url'=>$item_url,'title'=>$item['title']??'','date'=>$item['date']??''];
         }
