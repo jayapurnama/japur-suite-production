@@ -2,7 +2,7 @@
 /**
  * Module: JaPur Discovery Adapter
  * Description: Isolated normalization adapter for future Web Sumber discovery engines.
- * Module Version: 0.1.0
+ * Module Version: 0.1.1
  * Author: Japur Ganteng
  *
  * IMPORTANT: This file is intentionally passive. It registers no hooks, AJAX actions,
@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) exit;
 
 if (!class_exists('JaPur_Discovery_Adapter')) {
 final class JaPur_Discovery_Adapter {
-    const VER = '0.1.0';
+    const VER = '0.1.1';
 
     /**
      * Normalize discovery results from any engine into one predictable shape.
@@ -97,6 +97,21 @@ final class JaPur_Discovery_Adapter {
         }
 
         return self::normalize_items(array_values($all), $limit);
+    }
+
+    /**
+     * Run the passive Sitemap Discovery Engine through this adapter.
+     * No queue/database write is performed here.
+     */
+    public static function discover_sitemap($site, $sitemap = 'sitemap.xml', $limit = 10) {
+        $file = __DIR__ . '/class-sitemap-engine.php';
+        if (!class_exists('JaPur_Sitemap_Discovery_Engine') && is_readable($file)) {
+            require_once $file;
+        }
+        if (!class_exists('JaPur_Sitemap_Discovery_Engine')) {
+            return new WP_Error('sitemap_engine_missing', 'Sitemap Discovery Engine tidak tersedia.');
+        }
+        return JaPur_Sitemap_Discovery_Engine::discover($site, $sitemap, $limit);
     }
 
     private static function normalize_url($url) {
