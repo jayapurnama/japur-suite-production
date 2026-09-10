@@ -66,6 +66,8 @@ final class JapurSuite_Core {
             // v1.3.229: pastikan modul Manajemen Artikel ikut dimuat oleh core.
             'modules/article-task-manager/module.php',
             'modules/openai-cost/module.php',
+            // v1.3.276: Safe Source Sync layer. Existing modules remain untouched.
+            'modules/source-sync/module.php',
         ];
         foreach ($files as $file) {
             $path = JAPUR_SUITE_DIR . $file;
