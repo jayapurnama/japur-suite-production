@@ -3,7 +3,7 @@
  * Plugin Name: JaPur Suite Production
  * Plugin URI: https://jayapurnama.com/
  * Description: Satu plugin, banyak pekerjaan, bikin ngonten jadi lebih mudah, cepat, rapi, dan tetap santai. 😎 Karena kerja boleh serius, tapi prosesnya harus tetap seru! 🚀
- * Version: 1.3.275
+ * Version: 1.3.276
  * Author: Japur Ganteng
  * Author URI: https://jayapurnama.com/
  * License: GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 if (!defined('ABSPATH')) { exit; }
 
-if (!defined('JAPUR_SUITE_VERSION')) define('JAPUR_SUITE_VERSION', '1.3.275');
+if (!defined('JAPUR_SUITE_VERSION')) define('JAPUR_SUITE_VERSION', '1.3.276');
 if (!defined('JAPUR_SUITE_FILE')) define('JAPUR_SUITE_FILE', __FILE__);
 if (!defined('JAPUR_SUITE_DIR')) define('JAPUR_SUITE_DIR', plugin_dir_path(__FILE__));
 if (!defined('JAPUR_SUITE_URL')) define('JAPUR_SUITE_URL', plugin_dir_url(__FILE__));
