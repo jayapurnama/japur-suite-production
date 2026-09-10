@@ -1,0 +1,15 @@
+.japi-v25-panel textarea {
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.japi-v25-panel .components-button {
+    width: 100%;
+    justify-content: center;
+    margin-top: 8px;
+}
+
+.japi-v25-panel .components-notice {
+    margin: 0 0 12px;
+}
