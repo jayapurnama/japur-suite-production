@@ -88,6 +88,8 @@ class Japur_Source_Sync {
         $base=trailingslashit($source['url']);
         $host=parse_url($base,PHP_URL_HOST);
         if(!$host) return new WP_Error('source','Domain sumber tidak valid.');
+
+        // Preferred: RSS/Atom feeds.
         include_once ABSPATH . WPINC . '/feed.php';
         $feed_candidates=[$base.'feed/',$base.'rss/',$base.'rss.xml',$base.'feed.xml'];
         foreach($feed_candidates as $feed_url){
@@ -97,10 +99,16 @@ class Japur_Source_Sync {
             $max=min(30,(int)$feed->get_item_quantity(30));
             foreach($feed->get_items(0,$max) as $item){
                 $link=esc_url_raw($item->get_permalink());
-                if($link) $urls[$link]=['url'=>$link,'title'=>sanitize_text_field(wp_strip_all_tags($item->get_title())),'date'=>$item->get_date('c') ?: ''];
+                if($link) $urls[$link]=[
+                    'url'=>$link,
+                    'title'=>sanitize_text_field(wp_strip_all_tags($item->get_title())),
+                    'date'=>$item->get_date('c') ?: ''
+                ];
             }
             if($urls) break;
         }
+
+        // Fallback: sitemap(s).
         if(!$urls){
             $sitemap_candidates=[$base.'wp-sitemap.xml',$base.'sitemap_index.xml',$base.'sitemap.xml'];
             foreach($sitemap_candidates as $sm){
@@ -123,7 +131,9 @@ class Japur_Source_Sync {
                 if($urls) break;
             }
         }
+
         if(!$urls){
+            // Last-resort homepage link discovery, same-origin only.
             $r=wp_safe_remote_get($base,['timeout'=>20,'redirection'=>3,'user-agent'=>'JaPurSourceSync/1.0']);
             if(!is_wp_error($r)){
                 $html=wp_remote_retrieve_body($r);
@@ -161,9 +171,14 @@ class Japur_Source_Sync {
             $key=md5(strtolower($url));
             if(isset($seen[$key])) continue;
             $seen[$key]=time();
-            $entry=['id'=>$key,'source_id'=>$id,'source_name'=>$src['name'],'url'=>$url,'title'=>sanitize_text_field($item['title']??''),'date'=>sanitize_text_field($item['date']??''),'status'=>'new','created'=>time(),'material'=>''];
+            $entry=[
+                'id'=>$key,'source_id'=>$id,'source_name'=>$src['name'],'url'=>$url,
+                'title'=>sanitize_text_field($item['title']??''),'date'=>sanitize_text_field($item['date']??''),
+                'status'=>'new','created'=>time(),'material'=>''
+            ];
             $queue[$key]=$entry; $new[]=$entry;
         }
+        // Keep queue bounded.
         uasort($queue,function($a,$b){return (int)($b['created']??0)<=> (int)($a['created']??0);});
         $queue=array_slice($queue,0,200,true);
         $src['seen']=$seen; $src['last_scan']=time(); $s['sources'][$id]=$src; self::save($s); update_option(self::QUEUE,$queue,false);
@@ -233,14 +248,32 @@ class Japur_Source_Sync {
           var anchor=$('#jaf-target-card').first(); if(anchor.length) anchor.before(box.show()); else $('.wrap.jwp').first().prepend(box.show());
           function req(action,data,done){data=data||{};data.action=action;data.nonce=(window.JAF&&JAF.nonce)||'';$.post((window.JAF&&JAF.ajax)||ajaxurl,data,done);}
           function esc(t){return $('<div>').text(t||'').html();}
-          function load(){req('jss_get_queue',{},function(r){if(!r.success)return;renderSources(r.data.sources||[]);renderQueue(r.data.queue||[]);});}
-          function renderSources(items){var h=''; $.each(items,function(_,s){h+='<div class="jss-source"><strong>'+esc(s.name)+'</strong><small>'+esc(s.url)+'</small><button class="button jss-scan" data-id="'+esc(s.id)+'">Cek</button><button class="button-link-delete jss-del" data-id="'+esc(s.id)+'">Hapus</button></div>';}); $('#jss-sources').html(h||'<div class="jss-empty">Belum ada website sumber.</div>');}
-          function renderQueue(items){$('#jss-count').text(items.length); var h=''; $.each(items,function(_,x){h+='<div class="jss-item"><div><div class="jss-item-title">'+esc(x.title||'Artikel sumber')+'</div><div class="jss-item-url">'+esc(x.url)+'</div></div><button type="button" class="button button-primary jss-use" data-url="'+esc(x.url)+'">Gunakan di Buat Artikel</button></div>';}); $('#jss-list').html(h||'<div class="jss-empty">Belum ada artikel baru.</div>');}
+          function load(){
+            req('jss_get_queue',{},function(r){if(!r.success)return;renderSources(r.data.sources||[]);renderQueue(r.data.queue||[]);});
+          }
+          function renderSources(items){
+            var h=''; $.each(items,function(_,s){h+='<div class="jss-source"><strong>'+esc(s.name)+'</strong><small>'+esc(s.url)+'</small><button class="button jss-scan" data-id="'+esc(s.id)+'">Cek</button><button class="button-link-delete jss-del" data-id="'+esc(s.id)+'">Hapus</button></div>';});
+            $('#jss-sources').html(h||'<div class="jss-empty">Belum ada website sumber.</div>');
+          }
+          function renderQueue(items){
+            $('#jss-count').text(items.length); var h='';
+            $.each(items,function(_,x){h+='<div class="jss-item"><div><div class="jss-item-title">'+esc(x.title||'Artikel sumber')+'</div><div class="jss-item-url">'+esc(x.url)+'</div></div><button type="button" class="button button-primary jss-use" data-url="'+esc(x.url)+'">Gunakan di Buat Artikel</button></div>';});
+            $('#jss-list').html(h||'<div class="jss-empty">Belum ada artikel baru.</div>');
+          }
           $('#jss-add').on('click',function(){var b=$(this);b.prop('disabled',true);req('jss_save_source',{name:$('#jss-name').val(),url:$('#jss-url').val(),enabled:1},function(r){b.prop('disabled',false);if(!r.success){alert(r.data.message);return;}$('#jss-name,#jss-url').val('');load();});});
           $('#jss-scan-all').on('click',function(){var b=$(this);b.prop('disabled',true);req('jss_get_queue',{},function(r){var sources=(r.success&&r.data.sources)||[];var i=0;function next(){if(i>=sources.length){b.prop('disabled',false);load();return;}var id=sources[i++].id;req('jss_scan_source',{id:id},function(){next();});}next();});});
           $(document).on('click','.jss-scan',function(){var id=$(this).data('id'),b=$(this);b.prop('disabled',true);req('jss_scan_source',{id:id},function(r){b.prop('disabled',false);if(!r.success)alert(r.data.message);load();});});
           $(document).on('click','.jss-del',function(){if(!confirm('Hapus website sumber ini?'))return;req('jss_delete_source',{id:$(this).data('id')},function(){load();});});
-          $(document).on('click','.jss-use',function(){var url=$(this).data('url'),b=$(this); b.prop('disabled',true).text('Mengambil...'); req('jaf_extract_url',{url:url},function(r){b.prop('disabled',false).text('Gunakan di Buat Artikel'); if(!r.success){alert((r.data&&r.data.message)||'Extract gagal.');return;} $('#jaf-material').val(r.data.material||'').trigger('input').trigger('change'); if($('#jaf-url').length) $('#jaf-url').val(url); $('html,body').animate({scrollTop:$('#jaf-material').offset().top-90},350);});});
+          $(document).on('click','.jss-use',function(){
+            var url=$(this).data('url'),b=$(this); b.prop('disabled',true).text('Mengambil...');
+            req('jaf_extract_url',{url:url},function(r){
+              b.prop('disabled',false).text('Gunakan di Buat Artikel');
+              if(!r.success){alert((r.data&&r.data.message)||'Extract gagal.');return;}
+              $('#jaf-material').val(r.data.material||'').trigger('input').trigger('change');
+              if($('#jaf-url').length) $('#jaf-url').val(url);
+              $('html,body').animate({scrollTop:$('#jaf-material').offset().top-90},350);
+            });
+          });
           load();
         });
         </script>
