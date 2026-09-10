@@ -1,0 +1,33 @@
+name: Build JaPur Suite ZIP
+
+on:
+  push:
+    branches:
+      - dev/sitemap-to-article-workflow
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+      - name: Build ZIP from tracked branch files
+        run: |
+          rm -rf /tmp/japur-suite-production
+          mkdir -p /tmp/japur-suite-production
+          while IFS= read -r file; do
+            case "$file" in
+              .github/*) continue ;;
+            esac
+            mkdir -p "/tmp/japur-suite-production/$(dirname "$file")"
+            cp "$file" "/tmp/japur-suite-production/$file"
+          done < <(git ls-files)
+          cd /tmp
+          zip -qr japur-suite-production-branch.zip japur-suite-production
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: japur-suite-production-branch
+          path: /tmp/japur-suite-production-branch.zip
