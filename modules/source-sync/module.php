@@ -2,7 +2,7 @@
 /**
  * Module: JaPur Source Sync
  * Description: Safe source website monitor for the Buat Artikel workflow.
- * Module Version: 1.1.1
+ * Module Version: 1.2.0
  * Author: Japur Ganteng
  */
 if (!defined('ABSPATH')) exit;
@@ -19,6 +19,7 @@ class Japur_Source_Sync {
         add_action('wp_ajax_jss_scan_source', [__CLASS__, 'ajax_scan_source']);
         add_action('wp_ajax_jss_get_queue', [__CLASS__, 'ajax_get_queue']);
         add_action('wp_ajax_jss_clear_queue', [__CLASS__, 'ajax_clear_queue']);
+        add_action('wp_ajax_jss_consume_queue', [__CLASS__, 'ajax_consume_queue']);
         add_action('admin_footer', [__CLASS__, 'admin_footer']);
         add_action(self::CRON, [__CLASS__, 'cron_scan']);
         add_filter('cron_schedules', [__CLASS__, 'cron_schedules']);
@@ -100,9 +101,7 @@ class Japur_Source_Sync {
     private static function sitemap_is_post($url) {
         $path=strtolower((string)wp_parse_url($url,PHP_URL_PATH));
         $base=strtolower(pathinfo($path,PATHINFO_BASENAME));
-        // Explicitly reject non-post WordPress sitemap types.
         if(preg_match('~(^|[-_])(page|category|categories|tag|tags|author|attachment|media|product|products|taxonomy|taxonomies|post-format|users?)([-_]|\.|$)~i',$base)) return false;
-        // Prefer explicit post sitemap naming.
         if(preg_match('~(^|[-_])(post|posts)([-_]|\.|$)~i',$base)) return true;
         return false;
     }
@@ -115,13 +114,10 @@ class Japur_Source_Sync {
         $xml=self::fetch_xml($index_url);
         if(is_wp_error($xml)) return [];
         $posts=[];
-
-        // Sitemap index: inspect child sitemap names, and recurse only into indexes.
         if(isset($xml->sitemap)) {
             foreach($xml->sitemap as $sm) {
                 $loc=esc_url_raw(trim((string)$sm->loc));
                 if(!$loc) continue;
-                // Never follow sitemap indexes hosted on another domain.
                 $index_host=strtolower((string)wp_parse_url($index_url,PHP_URL_HOST));
                 $child_host=strtolower((string)wp_parse_url($loc,PHP_URL_HOST));
                 if(!$child_host || $child_host!==$index_host) continue;
@@ -137,9 +133,6 @@ class Japur_Source_Sync {
             }
             return $posts;
         }
-
-        // Direct URL-set sitemap: this is already a post sitemap only when its URL
-        // was explicitly identified as a post sitemap by the caller.
         return [];
     }
 
@@ -152,11 +145,7 @@ class Japur_Source_Sync {
                 $loc=esc_url_raw(trim((string)$u->loc));
                 if(!$loc || !preg_match('~^https?://~i',$loc)) continue;
                 $lastmod=trim((string)($u->lastmod ?? ''));
-                $items[$loc]=[
-                    'url'=>$loc,
-                    'title'=>'',
-                    'date'=>$lastmod
-                ];
+                $items[$loc]=['url'=>$loc,'title'=>'','date'=>$lastmod];
             }
         }
         return array_values($items);
@@ -168,25 +157,12 @@ class Japur_Source_Sync {
         $host=isset($parts['host'])?(string)$parts['host']:'';
         $scheme=isset($parts['scheme'])?(string)$parts['scheme']:'https';
         if(!$host) return new WP_Error('source','Domain sumber tidak valid.');
-        // Always scan from the site's root domain, even if an older saved source
-        // contains a path. This keeps the domain-only contract backward-compatible.
         $base=$scheme.'://'.$host.'/';
-
-        // Domain-only input: discover the sitemap automatically. Never use RSS
-        // for this mode because the contract is POST SITEMAP ONLY.
-        $candidates=[
-            $base.'wp-sitemap.xml',
-            $base.'sitemap_index.xml',
-            $base.'sitemap-index.xml',
-            $base.'sitemap.xml'
-        ];
-        $post_sitemaps=[];
-        $visited=[];
-
+        $candidates=[$base.'wp-sitemap.xml',$base.'sitemap_index.xml',$base.'sitemap-index.xml',$base.'sitemap.xml'];
+        $post_sitemaps=[]; $visited=[];
         foreach($candidates as $sm) {
             $xml=self::fetch_xml($sm);
             if(is_wp_error($xml)) continue;
-
             if(isset($xml->sitemap)) {
                 foreach($xml->sitemap as $child) {
                     $loc=esc_url_raw(trim((string)$child->loc));
@@ -201,106 +177,43 @@ class Japur_Source_Sync {
             } elseif(self::sitemap_is_post($sm)) {
                 $post_sitemaps[]=['url'=>$sm,'lastmod'=>''];
             }
-
             if($post_sitemaps) break;
         }
-
-        // De-duplicate post sitemap URLs.
-        $unique=[];
-        foreach($post_sitemaps as $sm) $unique[$sm['url']]=$sm;
-        $post_sitemaps=array_values($unique);
-
-        if(!$post_sitemaps) {
-            return new WP_Error('post_sitemap','Post sitemap tidak ditemukan. Pastikan website memiliki sitemap artikel/post yang dapat diakses publik.');
-        }
-
+        $unique=[]; foreach($post_sitemaps as $sm) $unique[$sm['url']]=$sm; $post_sitemaps=array_values($unique);
+        if(!$post_sitemaps) return new WP_Error('post_sitemap','Post sitemap tidak ditemukan. Pastikan website memiliki sitemap artikel/post yang dapat diakses publik.');
         $urls=[];
-        foreach($post_sitemaps as $sm) {
-            foreach(self::read_post_sitemap($sm['url']) as $item) {
-                $item_host=parse_url($item['url'],PHP_URL_HOST);
-                if($item_host && strtolower(preg_replace('/^www\./i','',$item_host))===strtolower(preg_replace('/^www\./i','',$host))) {
-                    $urls[$item['url']]=$item;
-                }
-            }
+        foreach($post_sitemaps as $sm) foreach(self::read_post_sitemap($sm['url']) as $item) {
+            $item_host=parse_url($item['url'],PHP_URL_HOST);
+            if($item_host && strtolower(preg_replace('/^www\./i','',$item_host))===strtolower(preg_replace('/^www\./i','',$host))) $urls[$item['url']]=$item;
         }
-
         $urls=array_values($urls);
-        usort($urls,function($a,$b){
-            $ta=strtotime((string)($a['date']??'')) ?: 0;
-            $tb=strtotime((string)($b['date']??'')) ?: 0;
-            return $tb<=>$ta;
-        });
-
-        // Only actual URLs from post sitemap reach the queue.
+        usort($urls,function($a,$b){$ta=strtotime((string)($a['date']??''))?:0;$tb=strtotime((string)($b['date']??''))?:0;return $tb<=>$ta;});
         return array_slice($urls,0,500);
     }
 
     private static function scan($id) {
-        $s=self::settings();
-        if(empty($s['sources'][$id])) return new WP_Error('source','Sumber tidak ditemukan.');
-        $src=$s['sources'][$id];
-        $found=self::discover($src);
-        if(is_wp_error($found)) return $found;
-        $seen=(array)($src['seen']??[]); $queue=get_option(self::QUEUE,[]); if(!is_array($queue))$queue=[];
-        $new=[];
-        foreach($found as $item){
-            $url=self::normalize_url($item['url']); if(!$url) continue;
-            $key=md5(strtolower($url));
-            if(isset($seen[$key])) continue;
-            $seen[$key]=time();
-            $entry=['id'=>$key,'source_id'=>$id,'source_name'=>$src['name'],'url'=>$url,'title'=>sanitize_text_field($item['title']??''),'date'=>sanitize_text_field($item['date']??''),'status'=>'new','created'=>time(),'material'=>''];
-            $queue[$key]=$entry; $new[]=$entry;
-        }
-        uasort($queue,function($a,$b){
-            $ad=strtotime((string)($a['date']??'')); $bd=strtotime((string)($b['date']??''));
-            if($ad!==$bd)return $bd<=>$ad;
-            return(int)($b['created']??0)<=>(int)($a['created']??0);
-        });
-        $queue=array_slice($queue,0,200,true);
-        usort($new,function($a,$b){return strtotime((string)($b['date']??''))<=>strtotime((string)($a['date']??''));});
-        $src['seen']=$seen; $src['last_scan']=time(); $s['sources'][$id]=$src; self::save($s);
-        update_option(self::QUEUE,$queue,false);
+        $s=self::settings(); if(empty($s['sources'][$id])) return new WP_Error('source','Sumber tidak ditemukan.');
+        $src=$s['sources'][$id]; $found=self::discover($src); if(is_wp_error($found)) return $found;
+        $seen=(array)($src['seen']??[]); $queue=get_option(self::QUEUE,[]); if(!is_array($queue))$queue=[]; $new=[];
+        foreach($found as $item){$url=self::normalize_url($item['url']);if(!$url)continue;$key=md5(strtolower($url));if(isset($seen[$key]))continue;$seen[$key]=time();$entry=['id'=>$key,'source_id'=>$id,'source_name'=>$src['name'],'url'=>$url,'title'=>sanitize_text_field($item['title']??''),'date'=>sanitize_text_field($item['date']??''),'status'=>'new','created'=>time(),'material'=>''];$queue[$key]=$entry;$new[]=$entry;}
+        uasort($queue,function($a,$b){$ad=strtotime((string)($a['date']??''));$bd=strtotime((string)($b['date']??''));if($ad!==$bd)return $bd<=>$ad;return(int)($b['created']??0)<=>(int)($a['created']??0);});
+        $queue=array_slice($queue,0,200,true); usort($new,function($a,$b){return strtotime((string)($b['date']??''))<=>strtotime((string)($a['date']??''));});
+        $src['seen']=$seen;$src['last_scan']=time();$s['sources'][$id]=$src;self::save($s);update_option(self::QUEUE,$queue,false);
         return['found'=>count($found),'new'=>$new,'queue'=>array_values($queue)];
     }
 
-    public static function ajax_scan_source(){
-        if(!self::auth())return;
-        $id=sanitize_key($_POST['id']??''); $r=self::scan($id);
-        if(is_wp_error($r))wp_send_json_error(['message'=>$r->get_error_message()]);
-        wp_send_json_success($r);
-    }
-
-    public static function ajax_get_queue(){
-        if(!self::auth())return;
-        $q=get_option(self::QUEUE,[]); if(!is_array($q))$q=[];
-        wp_send_json_success(['queue'=>array_values($q),'sources'=>array_values(self::settings()['sources'])]);
-    }
-
-    public static function ajax_clear_queue(){
-        if(!self::auth())return;
-        update_option(self::QUEUE,[],false); wp_send_json_success();
-    }
-
-    public static function cron_scan(){
-        $s=self::settings(); if(empty($s['enabled']))return;
-        foreach((array)$s['sources'] as $id=>$src)if(!empty($src['enabled']))self::scan($id);
-    }
-
-    public static function maybe_schedule(){
-        $s=self::settings();
-        if(!empty($s['enabled'])){
-            if(!wp_next_scheduled(self::CRON))wp_schedule_event(time()+300,$s['interval']==='30min'?'jss_30min':'daily',self::CRON);
-        }else wp_clear_scheduled_hook(self::CRON);
-    }
+    public static function ajax_scan_source(){if(!self::auth())return;$id=sanitize_key($_POST['id']??'');$r=self::scan($id);if(is_wp_error($r))wp_send_json_error(['message'=>$r->get_error_message()]);wp_send_json_success($r);}
+    public static function ajax_get_queue(){if(!self::auth())return;$q=get_option(self::QUEUE,[]);if(!is_array($q))$q=[];wp_send_json_success(['queue'=>array_values($q),'sources'=>array_values(self::settings()['sources'])]);}
+    public static function ajax_clear_queue(){if(!self::auth())return;update_option(self::QUEUE,[],false);wp_send_json_success();}
+    public static function ajax_consume_queue(){if(!self::auth())return;$id=sanitize_key($_POST['id']??'');if($id==='')wp_send_json_error(['message'=>'Artikel sumber tidak valid.']);$q=get_option(self::QUEUE,[]);if(!is_array($q))$q=[];if(isset($q[$id]))unset($q[$id]);update_option(self::QUEUE,$q,false);wp_send_json_success(['queue'=>array_values($q)]);}
+    public static function cron_scan(){ $s=self::settings();if(empty($s['enabled']))return;foreach((array)$s['sources'] as $id=>$src)if(!empty($src['enabled']))self::scan($id); }
+    public static function maybe_schedule(){ $s=self::settings();if(!empty($s['enabled'])){if(!wp_next_scheduled(self::CRON))wp_schedule_event(time()+300,$s['interval']==='30min'?'jss_30min':'daily',self::CRON);}else wp_clear_scheduled_hook(self::CRON); }
 
     public static function admin_footer(){
-        if(!is_admin())return;
-        $page=sanitize_key($_GET['page']??'');
-        if(!in_array($page,['jaf-extractor','jaf-extractor-workflow'],true))return;
-        $q=get_option(self::QUEUE,[]); if(!is_array($q))$q=[];?>
-<div id="jss-source-sync" style="display:none"><div class="jss-card"><div class="jss-head"><div><div class="jss-eyebrow">POST SOURCE WORKFLOW</div><h2>Ambil Artikel dari Website</h2><p>Masukkan domain utama. JaPur hanya mencari sitemap POST dan memasukkan URL artikel terbaru ke antrean.</p></div><span class="jss-badge">POST ONLY</span></div><div class="jss-grid"><div><label>Nama Website</label><input id="jss-name" type="text" placeholder="Contoh: Sumber Berita"></div><div><label>Domain Website</label><input id="jss-url" type="url" placeholder="https://contoh.com"></div></div><div class="jss-actions"><button type="button" class="button button-primary" id="jss-add">Tambah Sumber</button><button type="button" class="button" id="jss-scan-all">Cek Artikel Terbaru</button></div><div id="jss-sources"></div><div class="jss-queue"><div class="jss-qhead"><strong>Artikel Terbaru Terdeteksi</strong><span id="jss-count"><?php echo count($q);?></span></div><div id="jss-list"></div></div><p class="description">Hanya URL dari sitemap post yang diproses. Sitemap halaman, kategori, tag, author, produk, dan feed tidak digunakan.</p></div></div>
-<style>#jss-source-sync{margin:0 0 18px}.jss-card{background:#fff;border:1px solid #dcdcde;border-radius:14px;padding:20px;box-shadow:0 1px 2px rgba(0,0,0,.03)}.jss-head{display:flex;justify-content:space-between;gap:15px;align-items:flex-start}.jss-eyebrow{font-size:11px;font-weight:700;letter-spacing:.08em;color:#2271b1}.jss-head h2{margin:4px 0 5px;font-size:19px}.jss-head p{margin:0;color:#646970}.jss-badge{font-size:11px;font-weight:700;background:#edfaef;color:#08752d;border-radius:20px;padding:6px 10px}.jss-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.jss-grid label{display:block;font-weight:600;margin-bottom:5px}.jss-grid input{width:100%;min-height:40px}.jss-actions{display:flex;gap:8px;margin:14px 0}.jss-source{display:flex;align-items:center;gap:8px;padding:9px 0;border-top:1px solid #eee}.jss-source small{color:#646970}.jss-source button{margin-left:auto}.jss-qhead{display:flex;justify-content:space-between;margin-top:14px;padding:12px 0;border-top:1px solid #eee}.jss-item{display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px;border:1px solid #eee;border-radius:9px;margin:7px 0}.jss-item-title{font-weight:600}.jss-item-url{font-size:12px;color:#646970;word-break:break-all}.jss-use{white-space:nowrap}.jss-empty{color:#646970;padding:10px 0}@media(max-width:700px){.jss-grid{grid-template-columns:1fr}.jss-head{display:block}.jss-badge{display:inline-block;margin-top:10px}.jss-item{grid-template-columns:1fr}.jss-use{width:100%}}</style>
-<script>jQuery(function($){var box=$('#jss-source-sync');if(!box.length)return;var target=$('#jaf-workflow').length?$('#jaf-workflow'):$('.wrap.jwp').first();if(!target.length)return;var anchor=$('#jaf-target-card').first();if(anchor.length)anchor.before(box.show());else $('.wrap.jwp').first().prepend(box.show());function req(action,data,done){data=data||{};data.action=action;data.nonce=(window.JAF&&JAF.nonce)||'';$.post((window.JAF&&JAF.ajax)||ajaxurl,data,done)}function esc(t){return $('<div>').text(t||'').html()}function load(){req('jss_get_queue',{},function(r){if(!r.success)return;renderSources(r.data.sources||[]);renderQueue(r.data.queue||[])})}function renderSources(items){var h='';$.each(items,function(_,s){h+='<div class="jss-source"><strong>'+esc(s.name)+'</strong><small>'+esc(s.url)+'</small><button class="button jss-scan" data-id="'+esc(s.id)+'">Cek</button><button class="button-link-delete jss-del" data-id="'+esc(s.id)+'">Hapus</button></div>'});$('#jss-sources').html(h||'<div class="jss-empty">Belum ada website sumber.</div>')}function renderQueue(items){$('#jss-count').text(items.length);var h='';$.each(items,function(_,x){h+='<div class="jss-item"><div><div class="jss-item-title">'+esc(x.title||'Artikel sumber')+'</div><div class="jss-item-url">'+esc(x.url)+(x.date?' • '+esc(x.date):'')+'</div></div><button type="button" class="button button-primary jss-use" data-url="'+esc(x.url)+'">Gunakan di Buat Artikel</button></div>'});$('#jss-list').html(h||'<div class="jss-empty">Belum ada artikel baru.</div>')}$('#jss-add').on('click',function(){var b=$(this);b.prop('disabled',true);req('jss_save_source',{name:$('#jss-name').val(),url:$('#jss-url').val(),enabled:1},function(r){b.prop('disabled',false);if(!r.success){alert(r.data.message);return}$('#jss-name,#jss-url').val('');load()})});$('#jss-scan-all').on('click',function(){var b=$(this);b.prop('disabled',true);req('jss_get_queue',{},function(r){var sources=(r.success&&r.data.sources)||[],i=0;function next(){if(i>=sources.length){b.prop('disabled',false);load();return}var id=sources[i++].id;req('jss_scan_source',{id:id},function(){next()})}next()})});$(document).on('click','.jss-scan',function(){var id=$(this).data('id'),b=$(this);b.prop('disabled',true);req('jss_scan_source',{id:id},function(r){b.prop('disabled',false);if(!r.success)alert(r.data.message);load()})});$(document).on('click','.jss-del',function(){if(!confirm('Hapus website sumber ini?'))return;req('jss_delete_source',{id:$(this).data('id')},function(){load()})});$(document).on('click','.jss-use',function(){var url=$(this).data('url'),b=$(this);b.prop('disabled',true).text('Mengambil...');req('jaf_extract_url',{url:url},function(r){b.prop('disabled',false).text('Gunakan di Buat Artikel');if(!r.success){alert(r.data&&r.data.message?r.data.message:'Gagal mengambil artikel.');return}var m=r.data.material||r.data.content||'';if($('#jaf-material').length)$('#jaf-material').val(m).trigger('input').trigger('change');$('html,body').animate({scrollTop:$('#jaf-material').offset().top-100},300)})});load();});</script>
+        if(!is_admin())return;$page=sanitize_key($_GET['page']??'');if(!in_array($page,['jaf-extractor','jaf-extractor-workflow'],true))return;$q=get_option(self::QUEUE,[]);if(!is_array($q))$q=[];?>
+<style>#jss-source-sync{display:none}.jss-source-panel{margin-top:14px}.jss-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.jss-source-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0 0 10px}.jss-filter{min-width:120px}.jss-source-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.jss-source-list{border-top:1px solid #eee;margin-top:10px}.jss-source{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid #eee}.jss-source small{color:#646970;word-break:break-all}.jss-source button{margin-left:auto}.jss-qhead{display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding:12px 0;border-top:1px solid #eee}.jss-item{display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px;border:1px solid #eee;border-radius:9px;margin:7px 0}.jss-item-title{font-weight:600}.jss-item-url{font-size:12px;color:#646970;word-break:break-all}.jss-use{white-space:nowrap}.jss-empty{color:#646970;padding:10px 0}.jss-count{font-size:12px;color:#646970}.jss-source-note{margin-top:8px;color:#646970;font-size:12px}@media(max-width:700px){.jss-grid{grid-template-columns:1fr}.jss-item{grid-template-columns:1fr}.jss-use{width:100%}.jss-source-toolbar{align-items:flex-start;flex-direction:column}}</style>
+<div id="jss-source-sync"><div class="jss-source-panel"><div class="jss-grid"><div><label>Nama Website</label><input id="jss-name" type="text" placeholder="Contoh: Sumber Berita"></div><div><label>Domain Website</label><input id="jss-url" type="url" placeholder="https://contoh.com"></div></div><div class="jss-source-actions"><button type="button" class="button button-primary" id="jss-add">Tambah Sumber</button><button type="button" class="button" id="jss-scan-all">Cek Artikel Terbaru</button></div><div id="jss-sources" class="jss-source-list"></div><div class="jss-qhead"><strong>Artikel Terbaru Terdeteksi</strong><span><span id="jss-count">0</span> artikel</span></div><div class="jss-source-toolbar"><span class="jss-count" id="jss-range-label">Menampilkan 10 terbaru</span><select id="jss-limit" class="jss-filter"><option value="10">10 terbaru</option><option value="25">25 terbaru</option><option value="50">50 terbaru</option><option value="all">Semua</option></select></div><div id="jss-list"></div><div class="jss-source-note">Hanya URL dari sitemap post yang diproses. Setelah Extract berhasil, artikel otomatis dikeluarkan dari daftar tetapi tetap ditandai sebagai sudah digunakan.</div></div></div>
+<script>jQuery(function($){var box=$('#jss-source-sync');if(!box.length)return;var sourceCard=$('#jaf-source-card');if(!sourceCard.length)return;var tabs=sourceCard.find('.jwp-source-tabs').first();var urlPanel=$('#jaf-source-url');if(!tabs.length||!urlPanel.length)return;var tab=$('<button type="button" class="button jwp-source-tab" data-source="web">Web Sumber</button>');tabs.append(tab);var panel=$('<div id="jaf-source-web" class="jwp-source-panel" style="display:none"></div>');panel.append(box.children('.jss-source-panel'));urlPanel.after(panel);box.remove();var allQueue=<?php echo wp_json_encode(array_values($q));?>;function req(action,data,done){data=data||{};data.action=action;data.nonce=(window.JAF&&JAF.nonce)||'';$.post((window.JAF&&JAF.ajax)||ajaxurl,data,done)}function esc(t){return $('<div>').text(t||'').html()}function setTab(mode){sourceCard.find('.jwp-source-tab').removeClass('active');sourceCard.find('.jwp-source-panel').hide();sourceCard.find('.jwp-source-tab[data-source="'+mode+'"]').addClass('active');if(mode==='web')$('#jaf-source-web').show();else $('#jaf-source-'+mode).show()}tabs.on('click','.jwp-source-tab',function(){setTab($(this).data('source'))});function renderSources(items){var h='';$.each(items,function(_,s){h+='<div class="jss-source"><strong>'+esc(s.name)+'</strong><small>'+esc(s.url)+'</small><button class="button jss-scan" data-id="'+esc(s.id)+'">Cek</button><button class="button-link-delete jss-del" data-id="'+esc(s.id)+'">Hapus</button></div>'});$('#jss-sources').html(h||'<div class="jss-empty">Belum ada website sumber.</div>')}function renderQueue(items){allQueue=Array.isArray(items)?items:[];$('#jss-count').text(allQueue.length);var limit=$('#jss-limit').val()||'10',shown=limit==='all'?allQueue:allQueue.slice(0,Number(limit));$('#jss-range-label').text('Menampilkan '+shown.length+' '+(limit==='all'?'artikel':'terbaru'));var h='';$.each(shown,function(_,x){h+='<div class="jss-item" data-id="'+esc(x.id)+'"><div><div class="jss-item-title">'+esc(x.title||'Artikel sumber')+'</div><div class="jss-item-url">'+esc(x.url)+(x.date?' • '+esc(x.date):'')+'</div></div><button type="button" class="button button-primary jss-use" data-id="'+esc(x.id)+'" data-url="'+esc(x.url)+'">Gunakan</button></div>'});$('#jss-list').html(h||'<div class="jss-empty">Belum ada artikel baru.</div>')}function load(){req('jss_get_queue',{},function(r){if(!r.success)return;renderSources(r.data.sources||[]);renderQueue(r.data.queue||[])})}$('#jss-limit').on('change',function(){renderQueue(allQueue)});$('#jss-add').on('click',function(){var b=$(this);b.prop('disabled',true);req('jss_save_source',{name:$('#jss-name').val(),url:$('#jss-url').val(),enabled:1},function(r){b.prop('disabled',false);if(!r.success){alert(r.data.message);return}$('#jss-name,#jss-url').val('');load()})});$('#jss-scan-all').on('click',function(){var b=$(this);b.prop('disabled',true);req('jss_get_queue',{},function(r){var sources=(r.success&&r.data.sources)||[],i=0;function next(){if(i>=sources.length){b.prop('disabled',false);load();return}var id=sources[i++].id;req('jss_scan_source',{id:id},function(){next()})}next()})});$(document).on('click','.jss-scan',function(){var id=$(this).data('id'),b=$(this);b.prop('disabled',true);req('jss_scan_source',{id:id},function(r){b.prop('disabled',false);if(!r.success)alert(r.data.message);load()})});$(document).on('click','.jss-del',function(){if(!confirm('Hapus website sumber ini?'))return;req('jss_delete_source',{id:$(this).data('id')},function(){load()})});$(document).on('click','.jss-use',function(){var id=$(this).data('id'),url=$(this).data('url'),b=$(this);b.prop('disabled',true).text('Mengambil...');req('jaf_extract_url',{url:url},function(r){if(!r.success){b.prop('disabled',false).text('Gunakan');alert(r.data&&r.data.message?r.data.message:'Gagal mengambil artikel.');return}var m=r.data.material||r.data.content||'';if($('#jaf-material').length)$('#jaf-material').val(m).trigger('input').trigger('change');req('jss_consume_queue',{id:id},function(){load()});$('html,body').animate({scrollTop:$('#jaf-material').offset().top-100},300)})});load()});</script>
 <?php }
 }
 Japur_Source_Sync::init();
