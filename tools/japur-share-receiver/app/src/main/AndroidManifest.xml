@@ -7,6 +7,9 @@
         android:icon="@drawable/japur_icon"
         android:roundIcon="@drawable/japur_icon"
         android:supportsRtl="true">
+        <meta-data
+            android:name="android.app.shortcuts"
+            android:resource="@xml/shortcuts" />
         <activity
             android:name=".ShareReceiverActivity"
             android:exported="true"
