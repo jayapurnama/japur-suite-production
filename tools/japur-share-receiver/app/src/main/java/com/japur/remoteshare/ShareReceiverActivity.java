@@ -274,7 +274,7 @@ public class ShareReceiverActivity extends Activity {
             c.setRequestProperty("Content-Type","multipart/form-data; boundary="+boundary);
 
             OutputStream out=c.getOutputStream();
-            String head="--"+boundary+"\\r\\nContent-Disposition: form-data; name=\\\"jbr_share_image\\\"; filename=\\\""+name.replace("\\"","_")+"\\\"\\r\\nContent-Type:"+mime+"\\r\\n\\r\\n";
+            String head="--"+boundary+"\r\nContent-Disposition: form-data; name=\"jbr_share_image\"; filename=\""+name.replace("\"","_")+"\"\r\nContent-Type: "+mime+"\r\n\r\n";
             out.write(head.getBytes("UTF-8"));
             byte[] buf=new byte[8192];
             int n,total=0;
@@ -283,7 +283,7 @@ public class ShareReceiverActivity extends Activity {
                 if(total>MAX_BYTES) throw new Exception("Gambar terlalu besar");
                 out.write(buf,0,n);
             }
-            out.write(("\\r\\n--"+boundary+"--\\r\\n").getBytes("UTF-8"));
+            out.write(("\r\n--"+boundary+"--\r\n").getBytes("UTF-8"));
             out.flush(); out.close();
 
             int code=c.getResponseCode();
