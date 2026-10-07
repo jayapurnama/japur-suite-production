@@ -7,16 +7,10 @@
         android:icon="@drawable/japur_icon"
         android:roundIcon="@drawable/japur_icon"
         android:supportsRtl="true">
-        <meta-data
-            android:name="android.app.shortcuts"
-            android:resource="@xml/shortcuts" />
         <activity
             android:name=".ShareReceiverActivity"
             android:exported="true"
             android:launchMode="singleTop">
-            <meta-data
-                android:name="android.service.chooser.chooser_target_service"
-                android:value="androidx.sharetarget.ChooserTargetServiceCompat" />
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
