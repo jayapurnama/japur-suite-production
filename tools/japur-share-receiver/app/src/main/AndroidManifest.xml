@@ -11,6 +11,9 @@
             android:name=".ShareReceiverActivity"
             android:exported="true"
             android:launchMode="singleTop">
+            <meta-data
+                android:name="android.service.chooser.chooser_target_service"
+                android:value="androidx.sharetarget.ChooserTargetServiceCompat" />
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
