@@ -1,6 +1,10 @@
 name: Build JaPur Remote Share Receiver
 
 on:
+  pull_request:
+    paths:
+      - 'tools/japur-share-receiver/**'
+      - '.github/workflows/build-japur-share-receiver.yml'
   push:
     branches:
       - build/japur-share-receiver-v0.1.0
@@ -18,21 +22,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10'
-
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
