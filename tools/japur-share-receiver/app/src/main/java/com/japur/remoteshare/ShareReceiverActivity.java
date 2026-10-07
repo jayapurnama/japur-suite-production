@@ -1,82 +1,147 @@
 package com.japur.remoteshare;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONObject;
-
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
-import java.util.ArrayList;
-
 public class ShareReceiverActivity extends Activity {
-    private TextView status;
-    private EditText baseField, keyField;
+    private TextView resultView;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        if (ShareConfig.key(this).isEmpty()) { showSetup(); return; }
         handleIntent(getIntent());
     }
 
-    @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleIntent(intent); }
-
-    private void showSetup() {
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(40,48,40,40); box.setGravity(Gravity.CENTER_HORIZONTAL);
-        TextView title = new TextView(this); title.setText("JaPur Remote Share"); title.setTextSize(24); title.setTextColor(0xff244c3c); title.setGravity(Gravity.CENTER); box.addView(title, lp());
-        TextView info = new TextView(this); info.setText("Masukkan alamat JaPur Remote dan Kunci Share Android dari Pengaturan JaPur Remote."); info.setPadding(0,24,0,18); box.addView(info, lp());
-        baseField = new EditText(this); baseField.setHint("https://remote.jayapurnama.com"); baseField.setSingleLine(true); baseField.setText(ShareConfig.baseUrl(this)); box.addView(baseField, lp());
-        keyField = new EditText(this); keyField.setHint("Kunci Share Android"); keyField.setSingleLine(true); keyField.setInputType(0x00000081); box.addView(keyField, lp());
-        Button save = new Button(this); save.setText("Simpan & Lanjut"); save.setOnClickListener(v -> { if(baseField.getText().toString().trim().isEmpty()||keyField.getText().toString().trim().isEmpty()){Toast.makeText(this,"Alamat dan kunci wajib diisi.",Toast.LENGTH_SHORT).show();return;} ShareConfig.save(this,baseField.getText().toString(),keyField.getText().toString()); handleIntent(getIntent()); }); box.addView(save, lp());
-        setContentView(box);
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent(intent);
     }
-    private LinearLayout.LayoutParams lp(){return new LinearLayout.LayoutParams(-1,-2);}
 
     private void handleIntent(Intent intent) {
-        if (intent == null) { openRemote("","",""); return; }
-        String action=intent.getAction(); String type=intent.getType();
-        CharSequence cs=intent.getCharSequenceExtra(Intent.EXTRA_TEXT); String text=cs==null?"":cs.toString();
-        CharSequence titleCs=intent.getCharSequenceExtra(Intent.EXTRA_TITLE); String title=titleCs==null?"":titleCs.toString();
-        Uri image=null;
-        if(Intent.ACTION_SEND.equals(action) && type!=null && type.startsWith("image/")) image=intent.getParcelableExtra(Intent.EXTRA_STREAM);
-        if(Intent.ACTION_SEND_MULTIPLE.equals(action) && type!=null && type.startsWith("image/")) { ArrayList<Uri> list=intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM); if(list!=null&&!list.isEmpty()) image=list.get(0); }
-        if(image!=null){
-            showProgress("Menerima gambar dari ChatGPT…");
-            final Uri finalImage=image; new Thread(() -> { String uploaded=upload(finalImage,type); runOnUiThread(() -> { if(uploaded!=null&&!uploaded.isEmpty()){ openRemote(uploaded,text,title); } else { openRemote("",text,title); Toast.makeText(this,"Gambar tidak berhasil diunggah; URL/teks share tetap diteruskan.",Toast.LENGTH_LONG).show(); } }); }).start();
-        } else { openRemote("",text,title); }
-    }
-    private void showProgress(String s){ status=new TextView(this); status.setText(s); status.setGravity(Gravity.CENTER); status.setPadding(30,60,30,60); setContentView(status); }
+        String report = buildReport(intent);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(32, 40, 32, 28);
 
-    private String upload(Uri uri,String mime){
-        HttpURLConnection c=null; String boundary="----JaPurShare"+System.currentTimeMillis();
-        try{
-            URL u=new URL(ShareConfig.baseUrl(this)+"/wp-json/jbr/v1/share-image"); c=(HttpURLConnection)u.openConnection(); c.setDoOutput(true); c.setDoInput(true); c.setRequestMethod("POST"); c.setConnectTimeout(20000); c.setReadTimeout(30000); c.setRequestProperty("X-JBR-Share-Key",ShareConfig.key(this)); c.setRequestProperty("Content-Type","multipart/form-data; boundary="+boundary);
-            String name="shared-image.jpg"; try{android.database.Cursor cur=getContentResolver().query(uri,new String[]{"_display_name"},null,null,null); if(cur!=null){if(cur.moveToFirst()) name=cur.getString(0);cur.close();}}catch(Exception ignored){}
-            OutputStream out=c.getOutputStream(); String head="--"+boundary+"\r\nContent-Disposition: form-data; name=\"jbr_share_image\"; filename=\""+name.replace("\"","_")+"\"\r\nContent-Type:"+(mime==null?"image/jpeg":mime)+"\r\n\r\n"; out.write(head.getBytes("UTF-8"));
-            InputStream in=getContentResolver().openInputStream(uri); if(in==null) throw new Exception("URI tidak dapat dibaca"); byte[] buf=new byte[8192]; int n,total=0; while((n=in.read(buf))!=-1){total+=n;if(total>15*1024*1024)throw new Exception("Gambar terlalu besar");out.write(buf,0,n);} in.close(); out.write(("\r\n--"+boundary+"--\r\n").getBytes("UTF-8")); out.flush(); out.close();
-            int code=c.getResponseCode(); InputStream resp=code>=200&&code<300?c.getInputStream():c.getErrorStream(); String body=read(resp); if(code<200||code>=300) throw new Exception(body);
-            JSONObject json=new JSONObject(body); return json.optString("url","");
-        }catch(Exception e){return null;}finally{if(c!=null)c.disconnect();}
-    }
-    private String read(InputStream in)throws Exception{if(in==null)return "";BufferedReader r=new BufferedReader(new InputStreamReader(in,"UTF-8"));StringBuilder s=new StringBuilder();String line;while((line=r.readLine())!=null)s.append(line);r.close();return s.toString();}
+        TextView title = new TextView(this);
+        title.setText("JaPur Remote — Share Diagnostic");
+        title.setTextSize(22);
+        title.setGravity(Gravity.CENTER);
+        box.addView(title, lp());
 
-    private void openRemote(String imageUrl,String text,String title){
-        try{
-            StringBuilder q=new StringBuilder("?jbr_native_share=1"); if(!imageUrl.isEmpty())q.append("&url=").append(URLEncoder.encode(imageUrl,"UTF-8")); if(!text.isEmpty())q.append("&text=").append(URLEncoder.encode(text,"UTF-8")); if(!title.isEmpty())q.append("&title=").append(URLEncoder.encode(title,"UTF-8"));
-            Intent i=new Intent(Intent.ACTION_VIEW,Uri.parse(ShareConfig.baseUrl(this)+"/"+q)); startActivity(i); finish();
-        }catch(Exception e){Toast.makeText(this,"Gagal membuka JaPur Remote.",Toast.LENGTH_LONG).show();}
+        TextView info = new TextView(this);
+        info.setText("APK ini hanya membaca payload yang diterima dari Android Sharesheet. Tidak mengunduh, mengunggah, atau memproses gambar.");
+        info.setPadding(0, 18, 0, 18);
+        box.addView(info, lp());
+
+        ScrollView scroll = new ScrollView(this);
+        resultView = new TextView(this);
+        resultView.setText(report);
+        resultView.setTextIsSelectable(true);
+        resultView.setTextSize(15);
+        scroll.addView(resultView);
+        box.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        Button copy = new Button(this);
+        copy.setText("Salin Hasil Diagnostic");
+        copy.setOnClickListener(v -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("JaPur Share Diagnostic", resultView.getText()));
+            Toast.makeText(this, "Hasil diagnostic disalin.", Toast.LENGTH_SHORT).show();
+        });
+        box.addView(copy, lp());
+
+        setContentView(box);
+    }
+
+    private LinearLayout.LayoutParams lp() {
+        return new LinearLayout.LayoutParams(-1, -2);
+    }
+
+    private String buildReport(Intent intent) {
+        if (intent == null) return "Tidak ada Intent share yang diterima.";
+
+        StringBuilder s = new StringBuilder();
+        s.append("=== JaPur Share Diagnostic v0.1.1 ===\n\n");
+        s.append("ACTION\n").append(value(intent.getAction())).append("\n\n");
+        s.append("MIME TYPE\n").append(value(intent.getType())).append("\n\n");
+        s.append("DATA URI\n").append(value(intent.getData())).append("\n\n");
+        s.append("FLAGS\n0x").append(Long.toHexString(intent.getFlags() & 0xffffffffL)).append("\n\n");
+
+        CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        CharSequence title = intent.getCharSequenceExtra(Intent.EXTRA_TITLE);
+        s.append("EXTRA_TEXT\n").append(text == null ? "(null)" : clip(text.toString())).append("\n\n");
+        s.append("EXTRA_TITLE\n").append(title == null ? "(null)" : clip(title.toString())).append("\n\n");
+
+        s.append("EXTRA_STREAM\n");
+        Object stream = null;
+        try { stream = intent.getExtras() == null ? null : intent.getExtras().get(Intent.EXTRA_STREAM); }
+        catch (Exception ignored) {}
+        s.append(describe(stream)).append("\n\n");
+
+        ClipData cd = intent.getClipData();
+        s.append("CLIPDATA\n");
+        if (cd == null) {
+            s.append("(null)\n");
+        } else {
+            s.append("description=").append(cd.getDescription()).append("\n");
+            s.append("itemCount=").append(cd.getItemCount()).append("\n");
+            for (int i = 0; i < cd.getItemCount(); i++) {
+                ClipData.Item item = cd.getItemAt(i);
+                s.append("item[").append(i).append("].uri=").append(value(item.getUri())).append("\n");
+                s.append("item[").append(i).append("].text=").append(item.getText() == null ? "(null)" : clip(item.getText().toString())).append("\n");
+                s.append("item[").append(i).append("].html=").append(item.getHtmlText() == null ? "(null)" : clip(item.getHtmlText())).append("\n");
+            }
+        }
+
+        Bundle extras = intent.getExtras();
+        s.append("\nEXTRA KEYS\n");
+        if (extras == null || extras.keySet().isEmpty()) {
+            s.append("(none)\n");
+        } else {
+            for (String key : extras.keySet()) {
+                Object obj = null;
+                try { obj = extras.get(key); } catch (Exception ignored) {}
+                s.append(key).append(" = ").append(describe(obj)).append("\n");
+            }
+        }
+
+        s.append("\nCOMPONENT\n").append(value(intent.getComponent())).append("\n");
+        s.append("\nKESIMPULAN AWAL\n");
+        boolean hasStream = stream != null;
+        boolean hasUrl = (text != null && text.toString().contains("http")) || intent.getData() != null || (cd != null);
+        s.append("Ada EXTRA_STREAM: ").append(hasStream ? "YA" : "TIDAK").append("\n");
+        s.append("Ada indikasi URL/share data: ").append(hasUrl ? "YA" : "TIDAK").append("\n");
+        return s.toString();
+    }
+
+    private String describe(Object obj) {
+        if (obj == null) return "(null)";
+        if (obj instanceof Uri) return "Uri: " + obj;
+        if (obj instanceof CharSequence) return "Text: " + clip(obj.toString());
+        if (obj instanceof java.util.ArrayList) return "ArrayList(size=" + ((java.util.ArrayList<?>) obj).size() + "): " + clip(obj.toString());
+        return obj.getClass().getName() + ": " + clip(String.valueOf(obj));
+    }
+
+    private String value(Object obj) {
+        return obj == null ? "(null)" : clip(String.valueOf(obj));
+    }
+
+    private String clip(String text) {
+        if (text == null) return "(null)";
+        text = text.replace("\u0000", "");
+        return text.length() > 1200 ? text.substring(0, 1200) + "…[dipotong]" : text;
     }
 }
