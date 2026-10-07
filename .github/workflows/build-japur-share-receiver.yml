@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - build/japur-share-receiver-v0.1.0
+      - build/japur-share-receiver-v0.1.1-diagnostic
     paths:
       - 'tools/japur-share-receiver/**'
       - '.github/workflows/build-japur-share-receiver.yml'
